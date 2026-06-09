@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "square-fovi"
+version = "0.2.0"
+description = "Square-FOVI: An extended foveated interface for deep vision models (forked from FOVI)"
+requires-python = ">=3.9"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["fovi/requirements.txt"]}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fovi*"]
