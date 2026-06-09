@@ -1,4 +1,5 @@
 # Copyright (c) 2026 Nicholas Blauch. All rights reserved.
+# Modifications copyright (c) 2026 Arthur Solère.
 # This file is part of the original FOVI repository, used under the MIT License.
 
 import torch
@@ -261,6 +262,31 @@ class GaussianKNNGridSampler(KNNGridSampler):
 
         # just adjust the pooler
         self.pooler = KNNPoolingLayer(self.k, self.highres_coords, self.coords, mode='gaussian', device=self.device, sample_cortex=self.sample_cortex)
+
+@add_to_all(__all__)
+class SquareGridSampler(KNNGridSampler):
+    """
+    Square-FOVI Grid Sampler.
+    
+    Implements concentric equal-area square node sampling with corner snapping.
+    Maintains local isotropy by scaling radii to match circular area and 
+    rounding nodes per square perimeter to multiples of 8.
+    """
+    def __init__(self, fov, cmf_a, resolution, res_mult=3, cmf_a_mult=1, fixation_size=3000, k=None, sample_cortex=True, dtype=torch.float, device='cuda'):
+        # Force the style to 'square' to trigger the new geometry in coords.py and manifold.py
+        super().__init__(
+            fov=fov, 
+            cmf_a=cmf_a, 
+            resolution=resolution, 
+            res_mult=res_mult, 
+            cmf_a_mult=cmf_a_mult, 
+            fixation_size=fixation_size, 
+            k=k, 
+            style='square', 
+            sample_cortex=sample_cortex, 
+            dtype=dtype, 
+            device=device
+        )
 
 def compute_knn_indices_chunked(in_coords, out_coords, chunk_size=200, max_k=1000, use_tqdm=True):
     """

@@ -1,4 +1,5 @@
 # Copyright (c) 2026 Nicholas Blauch. All rights reserved.
+# Modifications copyright (c) 2026 Arthur Solère.
 # This file is part of the original FOVI repository, used under the MIT License.
 
 from scipy.integrate import cumulative_trapezoid
@@ -139,17 +140,21 @@ class CorticalSensorManifold():
         """
         return self.z_integral_interp(r)
 
-    def map_3d(self, x, y):
+    def map_3d(self, x, y, topology='euclidean'):
         r"""
         map cartesian :math:`(x,y)` coordinates to 3D cortical cylindrical coordinates :math:`(\rho,z,\phi)`
 
         Args:
             x (float): visual cartesian x coordinate
             y (float): visual cartesian y coordinate
+            topology (str, optional): which topology to use for distance calculation.
         Returns:
             rho_z_phi (tuple[float, float, float]): 3D cortical cylindrical coordinates :math:`(\rho, z, \phi)`
         """
-        r = np.sqrt(x**2 + y**2)
+        if topology == 'chebyshev':
+            r = np.maximum(np.abs(x), np.abs(y))
+        else:
+            r = np.sqrt(x**2 + y**2)
         theta = np.arctan2(y, x)
         rho = self.rho_3d(r)
         phi = self.phi_3d(theta)
@@ -202,16 +207,17 @@ class CorticalSensorManifold():
         phi = np.arctan2(y, x)
         return rho, z, phi
 
-    def vis_cartesian_to_cort_cartesian(self, x_y):
+    def vis_cartesian_to_cort_cartesian(self, x_y, topology='euclidean'):
         r"""
         Map visual cartesian coordinates to cortical cartesian coordinates
 
         Args:
             x_y (np.ndarray): visual cartesian coordinates :math:`(x,y)`
+            topology (str, optional): which topology to use for distance calculation.
         Returns:
             np.ndarray: cortical cartesian coordinates :math:`(x_c, y_c, z)`
         """
-        return np.array([(self.map_to_xyz(self.map_3d(x,y))) for x, y in x_y])
+        return np.array([(self.map_to_xyz(self.map_3d(x,y, topology=topology))) for x, y in x_y])
 
     def r_from_z(self, z):
         r"""
@@ -347,7 +353,7 @@ class CorticalSensorManifold():
 
 
 @add_to_all(__all__)
-def vis_cartesian_to_cortical_cartesian_coords(cartesian_coords, cmf_a, fov, as_tensor=False, device='cpu', k=10):
+def vis_cartesian_to_cortical_cartesian_coords(cartesian_coords, cmf_a, fov, as_tensor=False, device='cpu', k=10, topology='euclidean'):
     r"""
 
     * Map visual cartesian coordinates to 3d cortical cartesian coordinates using the 3D cortical model. 
@@ -363,13 +369,14 @@ def vis_cartesian_to_cortical_cartesian_coords(cartesian_coords, cmf_a, fov, as_
         as_tensor (bool, optional): whether to return as a tensor. Defaults to False.
         device (str or torch.Device, optional): if as_tensor=True, which device to use
         k (float, optional): scaling value for CMF
+        topology (str, optional): which topology to use for distance calculation.
     Returns:
         np.ndarray or torch.Tensor: (n, 3) array of cortical cartesian points :math:`(x_c, y_c, z)`
 
     """
     cartesian_fov_coords = cartesian_coords*(fov/2)
     model = CorticalSensorManifold(cmf_a, fov, k=k)
-    grid_pts_3d = model.vis_cartesian_to_cort_cartesian(cartesian_fov_coords)
+    grid_pts_3d = model.vis_cartesian_to_cort_cartesian(cartesian_fov_coords, topology=topology)
 
     if as_tensor:
         return torch.tensor(grid_pts_3d, device=device)
@@ -378,7 +385,7 @@ def vis_cartesian_to_cortical_cartesian_coords(cartesian_coords, cmf_a, fov, as_
 
 
 @add_to_all(__all__)
-def vis_cartesian_to_cortical_cylindrical(cartesian_coords, cmf_a, fov, as_tensor=False, device='cpu', k=10):
+def vis_cartesian_to_cortical_cylindrical(cartesian_coords, cmf_a, fov, as_tensor=False, device='cpu', k=10, topology='euclidean'):
     r"""
     Map visual cartesian coordinates to cortical cylindrical coordinates using the 3D cortical model. 
 
@@ -394,13 +401,14 @@ def vis_cartesian_to_cortical_cylindrical(cartesian_coords, cmf_a, fov, as_tenso
         as_tensor (bool, optional): whether to return as a tensor. Defaults to False.
         device (str or torch.Device, optional): if as_tensor=True, which device to use
         k (float, optional): scaling value for CMF
+        topology (str, optional): which topology to use for distance calculation.
     Returns:
         np.ndarray or torch.Tensor: (n, 3) array of cortical cylindrical points :math:`(\rho, z, \phi)`
 
     """
     cartesian_fov_coords = cartesian_coords*(fov/2)
     model = CorticalSensorManifold(cmf_a, fov, k=k)
-    grid_pts_3d = np.array([(model.map_3d(x, y)) for x, y in cartesian_fov_coords])
+    grid_pts_3d = np.array([(model.map_3d(x, y, topology=topology)) for x, y in cartesian_fov_coords])
 
     if as_tensor:
         return torch.tensor(grid_pts_3d, device=device)

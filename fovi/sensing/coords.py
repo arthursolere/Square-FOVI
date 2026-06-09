@@ -1,4 +1,5 @@
 # Copyright (c) 2026 Nicholas Blauch. All rights reserved.
+# Modifications copyright (c) 2026 Arthur Solère.
 # This file is part of the original FOVI repository, used under the MIT License.
 
 import numpy as np
@@ -57,9 +58,11 @@ class SamplingCoords():
             elif 'uniform' in style:
                 self.cortical = None
             else:
+                # determine topology based on style
+                topology = 'chebyshev' if style == 'square' else 'euclidean'
                 # cortical coordinates to be used for sampling RFs
-                self.cortical = vis_to_sensor_manifold(self.cartesian.cpu().numpy(), cmf_a, fov, as_tensor=True, device=device) 
-                self.cortical_pad_coords = vis_to_sensor_manifold(self.cartesian_pad_coords.cpu().numpy(), cmf_a, fov, as_tensor=True, device=device).to(dtype=dtype)
+                self.cortical = vis_to_sensor_manifold(self.cartesian.cpu().numpy(), cmf_a, fov, as_tensor=True, device=device, topology=topology) 
+                self.cortical_pad_coords = vis_to_sensor_manifold(self.cartesian_pad_coords.cpu().numpy(), cmf_a, fov, as_tensor=True, device=device, topology=topology).to(dtype=dtype)
 
         self.cartesian = self.cartesian.to(dtype)
         if self.cortical is not None:
@@ -299,6 +302,80 @@ def get_isotropic_sampling_coords(fov, cmf_a, res, circular=True, device='cpu', 
     return coords, polar_coords, plotting_coords
 
 @add_to_all(__all__)
+def get_square_sampling_coords(fov, cmf_a, res, device='cpu', max_norm_rad=1):
+    """
+    Sample coordinates as concentric equal-area squares with corner snapping.
+    Maintains local isotropy by matching the dr and dtheta of the isotropic circular model.
+    Uses Chebyshev polar coordinates (linear perimeter phase) to prevent corner distortion.
+    """
+    # 1. Get base isotropic radii to maintain the dtheta = dr relationship
+    radius, n_angles = _compute_isotropic_r_and_num_theta(fov, cmf_a, res, circular=True, device=device)
+    
+    # 2. Equal area square math
+    radius = radius * (np.sqrt(np.pi) / 2.0) * max_norm_rad
+    
+    # 3. Implement n_nodes = dr logic and round to multiples of 8
+    n_rounded = torch.clamp(torch.round(n_angles / 8.0) * 8, min=8).to(torch.int32)
+    
+    # 4. Vectorize perimeter mapping
+    r_rep = torch.repeat_interleave(radius, n_rounded)
+    n_rep = torch.repeat_interleave(n_rounded, n_rounded)
+    
+    # Create an index for each node in its respective square
+    node_idx = torch.cat([torch.arange(n.item(), device=device) for n in n_rounded])
+    
+    step = (8.0 * r_rep) / n_rep
+    d = node_idx * step
+    
+    x = torch.zeros_like(d)
+    y = torch.zeros_like(d)
+    
+    # Boolean masks for the 4 edges, shifted so d=0 starts at (r, 0)
+    mask_right_top = d < r_rep
+    mask_top = (d >= r_rep) & (d < 3 * r_rep)
+    mask_left = (d >= 3 * r_rep) & (d < 5 * r_rep)
+    mask_bottom = (d >= 5 * r_rep) & (d < 7 * r_rep)
+    mask_right_bot = d >= 7 * r_rep
+    
+    # Right edge (top half: moving up)
+    x[mask_right_top] = r_rep[mask_right_top]
+    y[mask_right_top] = d[mask_right_top]
+    
+    # Top edge (right to left)
+    x[mask_top] = r_rep[mask_top] - (d[mask_top] - r_rep[mask_top])
+    y[mask_top] = r_rep[mask_top]
+    
+    # Left edge (top to bottom)
+    x[mask_left] = -r_rep[mask_left]
+    y[mask_left] = r_rep[mask_left] - (d[mask_left] - 3 * r_rep[mask_left])
+    
+    # Bottom edge (left to right)
+    x[mask_bottom] = -r_rep[mask_bottom] + (d[mask_bottom] - 5 * r_rep[mask_bottom])
+    y[mask_bottom] = -r_rep[mask_bottom]
+    
+    # Right edge (bottom half: moving up to close the loop)
+    x[mask_right_bot] = r_rep[mask_right_bot]
+    y[mask_right_bot] = -r_rep[mask_right_bot] + (d[mask_right_bot] - 7 * r_rep[mask_right_bot])
+    
+    coords = torch.stack([x, y], dim=1)
+    theta = (d / (8.0 * r_rep)) * 2 * torch.pi
+    polar_coords = torch.stack([r_rep, theta], dim=1)
+    hemi_inds = x <= 0
+    
+    # 5. Plotting coordinates via complex log
+    fov_coords = coords * (fov / 2)
+    plotting_coords = torch.log(torch.abs(fov_coords[:, 0]) + 1j * fov_coords[:, 1] + cmf_a)
+    plotting_coords = torch.stack([plotting_coords.real, -plotting_coords.imag], 1)
+
+    std = torch.std(plotting_coords[:, 0]) * 0.5
+    max_fov_rad = np.log(fov / 2 + cmf_a)
+    
+    plotting_coords[hemi_inds, 0] = std + max_fov_rad - plotting_coords[hemi_inds, 0]
+    plotting_coords[~hemi_inds, 0] = plotting_coords[~hemi_inds, 0] - (std + max_fov_rad)
+
+    return coords, polar_coords, plotting_coords
+
+@add_to_all(__all__)
 def get_logpolar_image_sampling_coords(fov, cmf_a, res, device='cpu', force_n_points=None, max_norm_rad=1):
     """Convenience wrapper for log polar image sampling.
     
@@ -394,6 +471,18 @@ def num_sampling_coords_isotropic(fov, cmf_a, res, circular=True, device='cpu'):
 
 
 @add_to_all(__all__)
+def num_sampling_coords_square(fov, cmf_a, res, device='cpu'):
+    """
+    Quickly compute the exact number of sampling coordinates for square sampling.
+    Crucial for resolution auto-matching and KNN k-value approximation.
+    """
+    _, n_angles = _compute_isotropic_r_and_num_theta(fov, cmf_a, res, circular=True, device=device)
+    # Apply your exact same corner snapping logic
+    n_rounded = torch.clamp(torch.round(n_angles / 8.0) * 8, min=8).to(torch.int32)
+    return n_rounded.sum().item()
+
+
+@add_to_all(__all__)
 def find_desired_res(fov, cmf_a, n_points_desired, style, device='cpu', bounds=(1,1000), force_less_than=False, quiet=False):
     """Find the resolution that gives the desired number of sampling points using binary search.
     
@@ -468,18 +557,20 @@ def get_sampling_coords(fov, cmf_a, res, device='cpu', style='isotropic', max_va
             - torch.Tensor: Polar coordinates.
             - torch.Tensor: Plotting coordinates.
     """
-    assert style in ['isotropic', 'logpolar', 'isotropic_fixn', 'uniform', 'uniform_as_grid', 'logpolar_as_grid']
+    assert style in ['isotropic', 'logpolar', 'isotropic_fixn', 'uniform', 'uniform_as_grid', 'logpolar_as_grid', 'square']
     if style == 'uniform' or style == 'uniform_as_grid':
         coords = torch.linspace(-max_val, max_val, res)
         coords = torch.stack(torch.meshgrid(coords, coords), dim=2).reshape(-1,2).to(device)
         polar_coords = torch.stack([torch.sqrt(coords[:,0]**2 + coords[:,1]**2), torch.arctan2(coords[:,1], coords[:,0])], dim=1)
         plotting_coords = coords.clone()
-    elif 'isotropic' in style or style == 'logpolar' or style == 'logpolar_as_grid':
+    elif 'isotropic' in style or style == 'logpolar' or style == 'logpolar_as_grid' or style == 'square':
         if 'fixn' in style:
             force_n_points = res**2
         else:
             force_n_points = None
-        if style == 'logpolar' or style == 'logpolar_as_grid':
+        if style == 'square':
+            coords, polar_coords, plotting_coords = get_square_sampling_coords(fov, cmf_a, res, device=device, max_norm_rad=max_val)
+        elif style == 'logpolar' or style == 'logpolar_as_grid':
             coords, polar_coords, plotting_coords = get_logpolar_image_sampling_coords(fov, cmf_a, res, device=device, force_n_points=None, max_norm_rad=max_val)
         else:
             coords, polar_coords, plotting_coords = get_isotropic_sampling_coords(fov, cmf_a, res, device=device, force_n_points=force_n_points, max_norm_rad=max_val)
@@ -583,6 +674,8 @@ def num_sampling_coords(fov, cmf_a, res, style='isotropic', device='cpu'):
     """
     if style == 'isotropic':
         return num_sampling_coords_isotropic(fov, cmf_a, res, circular=True, device=device)
+    elif style == 'square':
+        return num_sampling_coords_square(fov, cmf_a, res, device=device)
     elif style in ['logpolar', 'logpolar_as_grid', 'isotropic_fixn', 'uniform', 'uniform_as_grid']:
         return res**2
     else:
