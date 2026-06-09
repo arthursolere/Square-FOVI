@@ -1,4 +1,5 @@
 # Copyright (c) 2026 Nicholas Blauch. All rights reserved.
+# Modifications copyright (c) 2026 Arthur Solère.
 # This file is part of the original FOVI repository, used under the MIT License.
 
 import torch
@@ -158,12 +159,12 @@ def prep_fovi_dinov3_finetuning(model, cfg, device='cuda', key='pretrained_model
             if layer == -1:
                 layer_module = model.embeddings.patch_embeddings
             else:
-                layer_module = model.layer[layer]
+                layer_module = model.model.layer[layer]
             for param in layer_module.parameters():
                 param.requires_grad = True       
 
     if cfg.get(key).unfreeze_all_norms:
-        for layer in model.layer:
+        for layer in model.model.layer:
             for ln in [layer.norm1, layer.norm2, layer.layer_scale1, layer.layer_scale2]:
                 for param in ln.parameters():
                     param.requires_grad = True   
@@ -176,7 +177,7 @@ def prep_fovi_dinov3_finetuning(model, cfg, device='cuda', key='pretrained_model
                 apply_lora(layer, r=cfg.get(key).lora.r, alpha=cfg.get(key).lora.alpha, device=device)
                 continue
             else:
-                layer = model.layer[ii]
+                layer = model.model.layer[ii]
             for sublayer in cfg.get(key).lora.sublayers:
                 parent, child = sublayer.split('.')
                 apply_lora(getattr(getattr(layer, parent), child), r=cfg.get(key).lora.r, alpha=cfg.get(key).lora.alpha, device=device)

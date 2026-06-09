@@ -1,4 +1,5 @@
 # Copyright (c) 2026 Nicholas Blauch. All rights reserved.
+# Modifications copyright (c) 2026 Arthur Solère.
 # This file is part of the original FOVI repository, used under the MIT License.
 
 from omegaconf import OmegaConf, open_dict
@@ -153,6 +154,19 @@ def get_model_from_base_fn(base_fn, load=True, load_strict=True, quiet=False, de
                     new_state_dict[k] = v
             state_dict[model_key] = new_state_dict
 
-            model.load_state_dict(state_dict[model_key], strict=load_strict)
+            # --- KEY TRANSLATION FIX ---
+            old_dict = state_dict[model_key]
+            new_dict = {}
+            for k, v in old_dict.items():
+                # Catch the old path and translate it to the new Hugging Face path
+                if "network.backbone.layer" in k:
+                    new_key = k.replace("network.backbone.layer", "network.backbone.model.layer")
+                else:
+                    new_key = k
+                new_dict[new_key] = v
+                
+            # Load the corrected dictionary
+            model.load_state_dict(new_dict, strict=load_strict)
+            # ---------------------------
 
     return model

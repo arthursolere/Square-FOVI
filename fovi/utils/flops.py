@@ -1,6 +1,8 @@
 # Copyright (c) 2026 Nicholas Blauch. All rights reserved.
+# Modifications copyright (c) 2026 Arthur Solère.
 # This file is part of the original FOVI repository, used under the MIT License.
 
+import math
 from fvcore.nn import FlopCountAnalysis
 from torch.nn.utils import parametrize as P
 import pandas as pd
@@ -144,6 +146,51 @@ def sdpa_flops(inputs, outputs):
 
     return macs_qk + macs_av + softmax
 
+def cdist_flops(inputs, outputs):
+    x1_shape = get_shape(_as_value(inputs[0]))
+    out_shape = get_shape(_as_value(outputs))
+    
+    if not x1_shape or not out_shape or len(x1_shape) < 2 or len(out_shape) < 2:
+        return 0
+        
+    D = int(x1_shape[-1])
+    
+    # out_shape is (*B, P, R). Multiplying all its elements gives B * P * R
+    B_P_R = 1
+    for dim in out_shape:
+        B_P_R *= int(dim)
+        
+    # 3 operations per element pair per dimension: (a-b), (a-b)^2, and sum
+    return 3 * B_P_R * D + B_P_R
+
+def topk_flops(inputs, outputs):
+    v_out = _as_value(outputs[0]) if isinstance(outputs, (list, tuple)) else _as_value(outputs)
+    out_shape = get_shape(v_out)
+    in_shape = get_shape(_as_value(inputs[0]))
+    
+    if not out_shape or not in_shape:
+        return 0
+        
+    N = int(in_shape[-1])
+    k = int(out_shape[-1])
+    output_elements = _numel_value(v_out)
+    
+    # Total queries (e.g., batch_size * num_points)
+    num_queries = output_elements // k if k > 0 else 0
+    
+    if k == 1:
+        return int(num_queries * (N - 1))
+    elif k > 1:
+        return int(num_queries * N * math.log2(k))
+    return 0
+
+def routing_flops(inputs, outputs):
+    """
+    For gather/scatter/index_select ops.
+    Technically memory bandwidth, but counting 1 operation per element acknowledges the cost.
+    """
+    v_out = _as_value(outputs)
+    return _numel_value(v_out)
 
 @add_to_all(__all__)
 def make_flop_counter(model, inputs, *, include_pointwise=True, include_reductions=True):
@@ -196,9 +243,6 @@ def make_flop_counter(model, inputs, *, include_pointwise=True, include_reductio
     # Scaled Dot-Product Attention
     flops = flops.set_op_handle("aten::scaled_dot_product_attention", sdpa_flops)
 
-    # Indexing/select (approximate by output size)
-    flops = flops.set_op_handle("aten::index_select", elemwise_flops)
-
     # elementwise not-equal
     flops = flops.set_op_handle("aten::ne", elemwise_flops) # 1 per element
 
@@ -216,6 +260,15 @@ def make_flop_counter(model, inputs, *, include_pointwise=True, include_reductio
     # max pool
     flops = flops.set_op_handle("aten::max_pool2d", max_pool2d_precise_flops)
 
+    # kNN Graph Building and Routing Overheads
+    flops = flops.set_op_handle("aten::cdist", cdist_flops)
+    flops = flops.set_op_handle("aten::topk", topk_flops)
+    flops = flops.set_op_handle("aten::gather", routing_flops)
+    flops = flops.set_op_handle("aten::scatter_add_", routing_flops)
+    flops = flops.set_op_handle("aten::scatter_", routing_flops)
+    flops = flops.set_op_handle("aten::index_select", routing_flops)
+    flops = flops.set_op_handle("aten::index", routing_flops)
+    flops = flops.set_op_handle("aten::index_put_", routing_flops)
 
     return flops
 
